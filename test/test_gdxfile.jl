@@ -126,8 +126,6 @@ execute_unload "gams_gdx_test.gdx", i, p, x, y;
         @test occursin("param", output)
 
         props = propertynames(gdxfile)
-        @test :path in props
-        @test :symbols in props
         @test :param in props
 
         rm(outfile, force=true)
@@ -152,10 +150,6 @@ execute_unload "gams_gdx_test.gdx", i, p, x, y;
 
         rm(outfile, force=true)
     end
-
-    # -------------------------------------------------------------------
-    # New tests
-    # -------------------------------------------------------------------
 
     @testset "GDXFile full round-trip (sets, params, variables)" begin
         gdx1 = read_gdx(test_gdx)
@@ -294,5 +288,127 @@ execute_unload "gams_gdx_test.gdx", i, p, x, y;
         @test sort(Vector(gdx2[:myset][!, 1])) == ["x", "y", "z"]
 
         rm(outfile, force=true)
+    end
+
+    @testset "Variable/Equation type enums" begin
+        gdxfile = read_gdx(test_gdx)
+
+        sym_x = get_symbol(gdxfile, :x)
+        @test sym_x.vartype isa VariableType
+        @test sym_x.vartype == VarFree  # Free Variable x(i)
+
+        sym_y = get_symbol(gdxfile, :y)
+        @test sym_y.vartype == VarPositive
+
+        # Integer constructor still works
+        v = GDXVariable("test", "", String[], 3, DataFrame(level=[0.0], marginal=[0.0], lower=[0.0], upper=[0.0], scale=[1.0]))
+        @test v.vartype == VarPositive
+
+        e = GDXEquation("test", "", String[], 0, DataFrame(level=[0.0], marginal=[0.0], lower=[0.0], upper=[0.0], scale=[1.0]))
+        @test e.equtype == EqE
+    end
+
+    @testset "Case-insensitive symbol lookup" begin
+        gdxfile = read_gdx(test_gdx)
+
+        @test gdxfile[:p] == gdxfile[:P]
+        @test gdxfile["p"] == gdxfile["P"]
+        @test haskey(gdxfile, :P)
+        @test haskey(gdxfile, :p)
+
+        @test get_symbol(gdxfile, :P) === get_symbol(gdxfile, :p)
+        @test get_symbol(gdxfile, "P") === get_symbol(gdxfile, "p")
+
+        # Original case is preserved in the name field
+        sym = get_symbol(gdxfile, :p)
+        @test sym.name == "p"
+
+        # Selective read is also case-insensitive
+        gdx2 = read_gdx(test_gdx, only=[:P, :X])
+        @test length(gdx2) == 2
+        @test :p in list_parameters(gdx2)
+        @test :x in list_variables(gdx2)
+    end
+
+    @testset "Symbol ordering is preserved" begin
+        gdxfile = read_gdx(test_gdx)
+        syms = list_symbols(gdxfile)
+
+        # Iteration order matches list_symbols order
+        iter_syms = Symbol[k for (k, _) in gdxfile]
+        @test iter_syms == syms
+
+        # Round-trip preserves order
+        outfile = joinpath(tempdir(), "gdx_jl_order_test.gdx")
+        write_gdx(outfile, gdxfile)
+        gdx2 = read_gdx(outfile)
+        @test list_symbols(gdx2) == syms
+
+        rm(outfile, force=true)
+    end
+
+    @testset "Set element text round-trip" begin
+        set_df = DataFrame(
+            dim1 = ["seattle", "san-diego", "topeka"],
+            element_text = ["rainy city", "sunny city", ""]
+        )
+        s = GDXSet("cities", "transport cities", ["*"], set_df)
+        gdxfile = GDXFile("", Dict{Symbol,GDXSymbol}(:cities => s))
+
+        outfile = joinpath(tempdir(), "gdx_jl_elemtext_test.gdx")
+        write_gdx(outfile, gdxfile)
+
+        gdx2 = read_gdx(outfile)
+        result = gdx2[:cities]
+        @test "element_text" in names(result)
+        @test result.element_text[1] == "rainy city"
+        @test result.element_text[2] == "sunny city"
+        @test result.element_text[3] == ""
+
+        rm(outfile, force=true)
+    end
+
+    @testset "Set without element text has no extra column" begin
+        set_df = DataFrame(dim1 = ["a", "b", "c"])
+        s = GDXSet("simple", "no text", ["*"], set_df)
+        gdxfile = GDXFile("", Dict{Symbol,GDXSymbol}(:simple => s))
+
+        outfile = joinpath(tempdir(), "gdx_jl_notext_test.gdx")
+        write_gdx(outfile, gdxfile)
+
+        gdx2 = read_gdx(outfile)
+        @test !("element_text" in names(gdx2[:simple]))
+
+        rm(outfile, force=true)
+    end
+
+    @testset "Alias round-trip" begin
+        set_df = DataFrame(dim1 = ["a", "b", "c"])
+        s = GDXSet("i", "original set", ["*"], set_df)
+        a = GDXAlias("j", "alias for i", "i")
+        gdxfile = GDXFile("", Dict{Symbol,GDXSymbol}(:i => s, :j => a))
+
+        outfile = joinpath(tempdir(), "gdx_jl_alias_test.gdx")
+        write_gdx(outfile, gdxfile)
+
+        gdx2 = read_gdx(outfile)
+        @test :i in list_sets(gdx2)
+        @test :j in list_aliases(gdx2)
+
+        alias_sym = get_symbol(gdx2, :j)
+        @test alias_sym isa GDXAlias
+        @test alias_sym.alias_for == "i"
+
+        # Accessing alias records resolves to the aliased set's records
+        @test gdx2[:j] == gdx2[:i]
+
+        rm(outfile, force=true)
+    end
+
+    @testset "GDXAlias show" begin
+        a = GDXAlias("j", "", "i")
+        io = IOBuffer()
+        show(io, a)
+        @test occursin("j", String(take!(io)))
     end
 end

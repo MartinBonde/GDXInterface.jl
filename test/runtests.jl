@@ -1,4 +1,4 @@
-import Test: @testset, @test
+import Test: @testset, @test, @test_throws
 import DataFrames: DataFrame
 using GDXInterface
 

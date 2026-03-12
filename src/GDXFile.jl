@@ -1,4 +1,4 @@
-# High-level GDX file API for GAMS.jl
+# High-level GDX file API for GDXInterface.jl
 # User-friendly interface for reading and writing GDX files
 
 # requires `import DataFrames`
@@ -71,8 +71,9 @@ Container for GDX file contents. Provides dictionary-like access to symbols.
 # Example
 ```julia
 gdx = read_gdx("model.gdx")
-gdx[:demand]  # Access parameter as DataFrames.DataFrame
-list_parameters(gdx)  # List all parameters
+gdx[:demand]              # Access records as DataFrame
+get_symbol(gdx, :demand)  # Access full GDXSymbol object
+list_parameters(gdx)      # List all parameters
 ```
 """
 struct GDXFile
@@ -99,11 +100,23 @@ list_variables(gdx::GDXFile) = Symbol[k for (k, v) in gdx.symbols if v isa GDXVa
 list_equations(gdx::GDXFile) = Symbol[k for (k, v) in gdx.symbols if v isa GDXEquation]
 list_symbols(gdx::GDXFile) = collect(keys(gdx.symbols))
 
-# Dictionary-like access
+"""
+    get_symbol(gdx::GDXFile, sym) -> GDXSymbol
+
+Return the full GDXSymbol object (with name, description, domain, etc.),
+not just the records DataFrame.
+"""
+get_symbol(gdx::GDXFile, sym::Symbol) = gdx.symbols[sym]
+get_symbol(gdx::GDXFile, sym::String) = gdx.symbols[Symbol(sym)]
+
+# Dictionary-like access (returns records DataFrame)
 Base.getindex(gdx::GDXFile, sym::Symbol) = gdx.symbols[sym].records
 Base.getindex(gdx::GDXFile, sym::String) = gdx[Symbol(sym)]
 Base.haskey(gdx::GDXFile, sym::Symbol) = haskey(gdx.symbols, sym)
 Base.keys(gdx::GDXFile) = keys(gdx.symbols)
+Base.length(gdx::GDXFile) = length(gdx.symbols)
+Base.iterate(gdx::GDXFile) = iterate(gdx.symbols)
+Base.iterate(gdx::GDXFile, state) = iterate(gdx.symbols, state)
 
 # Property access for tab completion
 function Base.propertynames(gdx::GDXFile, private::Bool=false)
@@ -121,23 +134,29 @@ end
 # =============================================================================
 
 """
-    read_gdx(filepath::String; parse_integers=true) -> GDXFile
+    read_gdx(filepath::String; parse_integers=true, only=nothing) -> GDXFile
 
 Read a GDX file and return a GDXFile container with all symbols.
 
 # Arguments
 - `filepath`: Path to the GDX file
 - `parse_integers`: If true, attempt to parse set elements that look like integers as Int
+- `only`: Optional collection of symbol names (Strings or Symbols) to read.
+  When provided, only the specified symbols are loaded from the file.
 
 # Example
 ```julia
 gdx = read_gdx("transport.gdx")
-demand = gdx[:demand]  # Get parameter as DataFrames.DataFrame
+demand = gdx[:demand]  # Get parameter as DataFrame
+
+# Read only specific symbols from a large file
+gdx = read_gdx("big_model.gdx", only=[:x, :demand])
 ```
 """
-function read_gdx(filepath::String; parse_integers::Bool=true)
+function read_gdx(filepath::String; parse_integers::Bool=true, only=nothing)
     gdx = GDXHandle()
     gdx_create(gdx)
+    only_filter = only === nothing ? nothing : Set{Symbol}(Symbol.(only))
 
     try
         gdx_open_read(gdx, filepath)
@@ -147,9 +166,13 @@ function read_gdx(filepath::String; parse_integers::Bool=true)
 
         for sym_nr in 1:n_syms
             sym_name, sym_dim, sym_type = gdx_symbol_info(gdx, sym_nr)
-            sym_count, sym_user_info, sym_description = gdx_symbol_info_x(gdx, sym_nr)
-
             sym_key = Symbol(sym_name)
+
+            if only_filter !== nothing && !(sym_key in only_filter)
+                continue
+            end
+
+            sym_count, sym_user_info, sym_description = gdx_symbol_info_x(gdx, sym_nr)
 
             if sym_type == GMS_DT_SET
                 symbols[sym_key] = _read_set(gdx, sym_nr, sym_name, sym_dim, sym_description)
@@ -333,25 +356,25 @@ end
 # =============================================================================
 
 """
-    write_gdx(filepath::String, symbols::Pair{String, DataFrames.DataFrame}...; producer="GAMS.jl")
+    write_gdx(filepath::String, gdxfile::GDXFile; producer="GDXInterface.jl")
 
-Write DataFrames.DataFrames to a GDX file as parameters.
+Write a GDXFile container (with sets, parameters, variables, and equations) to a GDX file.
 
 # Example
 ```julia
-df = DataFrames.DataFrame(i=["a", "b", "c"], value=[1.0, 2.0, 3.0])
-write_gdx("output.gdx", "demand" => df)
+gdx = read_gdx("input.gdx")
+write_gdx("output.gdx", gdx)
 ```
 """
-function write_gdx(filepath::String, symbols::Pair{String, DataFrames.DataFrame}...; producer::String="GAMS.jl")
+function write_gdx(filepath::String, gdxfile::GDXFile; producer::String="GDXInterface.jl")
     gdx = GDXHandle()
     gdx_create(gdx)
 
     try
         gdx_open_write(gdx, filepath, producer)
 
-        for (name, df) in symbols
-            _write_parameter(gdx, name, df)
+        for (_, sym) in gdxfile.symbols
+            _write_symbol(gdx, sym)
         end
 
         gdx_close(gdx)
@@ -361,9 +384,68 @@ function write_gdx(filepath::String, symbols::Pair{String, DataFrames.DataFrame}
     return filepath
 end
 
-function _write_parameter(gdx::GDXHandle, name::String, df::DataFrames.DataFrame)
-    description = get(DataFrames.metadata(df), "description", "")
+"""
+    write_gdx(filepath::String, symbols::Pair{String, DataFrame}...; producer="GDXInterface.jl")
 
+Write DataFrames to a GDX file as parameters. Each pair maps a symbol name to its DataFrame.
+The DataFrame must have a `:value` column; all other columns are treated as domain dimensions.
+
+# Example
+```julia
+df = DataFrame(i=["a", "b", "c"], value=[1.0, 2.0, 3.0])
+write_gdx("output.gdx", "demand" => df)
+```
+"""
+function write_gdx(filepath::String, symbols::Pair{String, DataFrames.DataFrame}...; producer::String="GDXInterface.jl")
+    gdx = GDXHandle()
+    gdx_create(gdx)
+
+    try
+        gdx_open_write(gdx, filepath, producer)
+
+        for (name, df) in symbols
+            desc = get(DataFrames.metadata(df), "description", "")
+            _write_parameter_df(gdx, name, df, desc)
+        end
+
+        gdx_close(gdx)
+    finally
+        gdx_free(gdx)
+    end
+    return filepath
+end
+
+# Type dispatch for writing symbols
+_write_symbol(gdx::GDXHandle, sym::GDXSet) = _write_set(gdx, sym)
+_write_symbol(gdx::GDXHandle, sym::GDXParameter) = _write_parameter(gdx, sym)
+_write_symbol(gdx::GDXHandle, sym::GDXVariable) = _write_variable(gdx, sym)
+_write_symbol(gdx::GDXHandle, sym::GDXEquation) = _write_equation(gdx, sym)
+
+function _write_set(gdx::GDXHandle, sym::GDXSet)
+    df = sym.records
+    cols = names(df)
+    dim = length(cols)
+
+    gdx_data_write_str_start(gdx, sym.name, sym.description, dim, GMS_DT_SET)
+
+    keys = Vector{String}(undef, dim)
+    vals = zeros(Float64, GMS_VAL_MAX)
+
+    for row in eachrow(df)
+        for (i, col) in enumerate(cols)
+            keys[i] = string(row[col])
+        end
+        gdx_data_write_str(gdx, keys, vals)
+    end
+
+    gdx_data_write_done(gdx)
+end
+
+function _write_parameter(gdx::GDXHandle, sym::GDXParameter)
+    _write_parameter_df(gdx, sym.name, sym.records, sym.description)
+end
+
+function _write_parameter_df(gdx::GDXHandle, name::String, df::DataFrames.DataFrame, description::String="")
     dim_cols = [n for n in names(df) if n != "value"]
     dim = length(dim_cols)
 
@@ -381,7 +463,58 @@ function _write_parameter(gdx::GDXHandle, name::String, df::DataFrames.DataFrame
     end
 
     gdx_data_write_done(gdx)
-    return
+end
+
+const _VAR_EQU_COLS = Set(["level", "marginal", "lower", "upper", "scale"])
+
+function _write_variable(gdx::GDXHandle, sym::GDXVariable)
+    df = sym.records
+    dim_cols = [n for n in names(df) if !(n in _VAR_EQU_COLS)]
+    dim = length(dim_cols)
+
+    gdx_data_write_str_start(gdx, sym.name, sym.description, dim, GMS_DT_VAR, sym.vartype)
+
+    keys = Vector{String}(undef, dim)
+    vals = zeros(Float64, GMS_VAL_MAX)
+
+    for row in eachrow(df)
+        for (i, col) in enumerate(dim_cols)
+            keys[i] = string(row[col])
+        end
+        vals[GAMS_VALUE_LEVEL] = _to_gdx_value(row[:level])
+        vals[GAMS_VALUE_MARGINAL] = _to_gdx_value(row[:marginal])
+        vals[GAMS_VALUE_LOWER] = _to_gdx_value(row[:lower])
+        vals[GAMS_VALUE_UPPER] = _to_gdx_value(row[:upper])
+        vals[GAMS_VALUE_SCALE] = _to_gdx_value(row[:scale])
+        gdx_data_write_str(gdx, keys, vals)
+    end
+
+    gdx_data_write_done(gdx)
+end
+
+function _write_equation(gdx::GDXHandle, sym::GDXEquation)
+    df = sym.records
+    dim_cols = [n for n in names(df) if !(n in _VAR_EQU_COLS)]
+    dim = length(dim_cols)
+
+    gdx_data_write_str_start(gdx, sym.name, sym.description, dim, GMS_DT_EQU, sym.equtype)
+
+    keys = Vector{String}(undef, dim)
+    vals = zeros(Float64, GMS_VAL_MAX)
+
+    for row in eachrow(df)
+        for (i, col) in enumerate(dim_cols)
+            keys[i] = string(row[col])
+        end
+        vals[GAMS_VALUE_LEVEL] = _to_gdx_value(row[:level])
+        vals[GAMS_VALUE_MARGINAL] = _to_gdx_value(row[:marginal])
+        vals[GAMS_VALUE_LOWER] = _to_gdx_value(row[:lower])
+        vals[GAMS_VALUE_UPPER] = _to_gdx_value(row[:upper])
+        vals[GAMS_VALUE_SCALE] = _to_gdx_value(row[:scale])
+        gdx_data_write_str(gdx, keys, vals)
+    end
+
+    gdx_data_write_done(gdx)
 end
 
 # =============================================================================

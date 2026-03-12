@@ -52,7 +52,7 @@ function parse_gdx_value(val::Float64)
         return -Inf
     end
     if val == GAMS_SV_EPS
-        return eps()
+        return 0.0  # GAMS EPS represents "explicitly zero" in sparse data
     end
     return val
 end
@@ -130,9 +130,9 @@ end
 
 function gdx_open_read(gdx::GDXHandle, file::String)
     rc = gdx_open_read(gdx.cptr[], file, gdx.cival)
-    # if gdx.cival[] != 0 || rc != 1
-        # throw(GDXException("Can't open file '$file'", gdx.cival[]))
-    # end
+    if gdx.cival[] != 0 || rc != 1
+        throw(GDXException("Can't open file '$file'", gdx.cival[]))
+    end
     return rc
 end
 

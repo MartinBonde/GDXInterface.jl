@@ -52,7 +52,7 @@ function parse_gdx_value(val::Float64)
         return -Inf
     end
     if val == GAMS_SV_EPS
-        return eps()
+        return -0.0
     end
     return val
 end
@@ -130,9 +130,9 @@ end
 
 function gdx_open_read(gdx::GDXHandle, file::String)
     rc = gdx_open_read(gdx.cptr[], file, gdx.cival)
-    # if gdx.cival[] != 0 || rc != 1
-        # throw(GDXException("Can't open file '$file'", gdx.cival[]))
-    # end
+    if gdx.cival[] != 0 || rc != 1
+        throw(GDXException("Can't open file '$file'", gdx.cival[]))
+    end
     return rc
 end
 
@@ -279,6 +279,70 @@ function gdx_symbol_get_domain_x(gdx::GDXHandle, sym_nr::Int, dim::Int)
         domains[i] = unsafe_string(gdx.cbuf[i])
     end
     return domains
+end
+
+# =============================================================================
+# Alias
+# =============================================================================
+
+function gdx_add_alias(gdx_ptr::Ptr{Cvoid}, id1::String, id2::String)
+    return ccall(
+        (@cpfx(:gdxaddalias), LIBGDX),
+        Cint,
+        (Ptr{Cvoid}, Cstring, Cstring),
+        gdx_ptr,
+        id1,
+        id2,
+    )
+end
+
+function gdx_add_alias(gdx::GDXHandle, id1::String, id2::String)
+    rc = gdx_add_alias(gdx.cptr[], id1, id2)
+    if rc != 1
+        throw(GDXException("Can't add alias '$id2' for '$id1'", 0))
+    end
+    return
+end
+
+# =============================================================================
+# Set element text
+# =============================================================================
+
+function gdx_get_elem_text(gdx_ptr::Ptr{Cvoid}, text_nr::Int, text::Ptr{UInt8}, node::Ref{Cint})
+    return ccall(
+        (@cpfx(:gdxgetelemtext), LIBGDX),
+        Cint,
+        (Ptr{Cvoid}, Cint, Ptr{UInt8}, Ref{Cint}),
+        gdx_ptr,
+        text_nr,
+        text,
+        node,
+    )
+end
+
+function gdx_get_elem_text(gdx::GDXHandle, text_nr::Int)
+    gdx.buf[1][1] = UInt8('\0')
+    rc = gdx_get_elem_text(gdx.cptr[], text_nr, gdx.cbuf[1], gdx.cival)
+    return rc == 1, unsafe_string(gdx.cbuf[1])
+end
+
+function gdx_add_set_text(gdx_ptr::Ptr{Cvoid}, text::String, text_nr::Ref{Cint})
+    return ccall(
+        (@cpfx(:gdxaddsettext), LIBGDX),
+        Cint,
+        (Ptr{Cvoid}, Cstring, Ref{Cint}),
+        gdx_ptr,
+        text,
+        text_nr,
+    )
+end
+
+function gdx_add_set_text(gdx::GDXHandle, text::String)
+    rc = gdx_add_set_text(gdx.cptr[], text, gdx.cival)
+    if rc != 1
+        throw(GDXException("Can't register set element text", 0))
+    end
+    return Int(gdx.cival[])
 end
 
 # =============================================================================

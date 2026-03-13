@@ -7,6 +7,11 @@ authors = ["Martin Kirk Bonde", "James Daniel Foster"]
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 gdx_jll = "aa021fa7-5c7d-5dc1-9fa7-c90cd282ac20"
 
+[compat]
+DataFrames = "1"
+gdx_jll = "7.11.19"
+julia = "1.6"
+
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
